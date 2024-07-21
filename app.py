@@ -2,12 +2,22 @@ import os
 import cv2
 import numpy as np
 from flask import Flask, request, jsonify
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all origins by passing 'app' to CORS
 app.config['UPLOAD_FOLDER'] = '/home/swolf/Documents/GitHub/myCarAPI/uploads/'
 
 # Ensure the upload directory exists
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+def ensure_upload_directory_exists():
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        print(f"Created upload directory: {app.config['UPLOAD_FOLDER']}")
+    else:
+        print(f"Upload directory already exists: {app.config['UPLOAD_FOLDER']}")
+
+ensure_upload_directory_exists()
 
 def load_yolo(weights_path, config_path):
     """Load YOLO model from weights and configuration files."""
@@ -62,13 +72,18 @@ def process_image():
         return jsonify({"message": "No file path provided"}), 400
 
     file_path = data['file_path']
+
+    # Ensure file_path is a string
+    if isinstance(file_path, list):
+        file_path = file_path[0]  # Assuming it's the first element in the list
+
     if not os.path.isfile(file_path):
         return jsonify({"message": "File not found"}), 404
 
+    # Continue with your image processing logic
     weights_path = 'yolo/lapi.weights'
     config_path = 'yolo/darknet-yolov3.cfg'
     labels = ['license_plate']
-
     net, layer_names_output = load_yolo(weights_path, config_path)
     image, detected_plates = detect_license_plate(file_path, net, layer_names_output, labels)
 
@@ -83,6 +98,41 @@ def process_image():
     cv2.imwrite(file_path, blurred_image)
 
     return jsonify({"message": "License plate blurred successfully.", "file_path": file_path}), 200
+
+@app.route('/api/upload-car', methods=['POST'])
+def upload_car_with_images():
+    try:
+        # Extract data from request
+        user_id = request.form['userId']
+        car_json = request.form['car']
+        files = request.files.getlist('files')
+
+        # Save car JSON to temp file
+        temp_file = os.path.join(app.config['UPLOAD_FOLDER'], 'car.json')
+        with open(temp_file, 'w') as f:
+            f.write(car_json)
+
+        # Save uploaded images
+        for file in files:
+            filename = secure_filename(file.filename)
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(file_path)
+
+            # Process each image to detect license plates
+            weights_path = 'yolo/lapi.weights'
+            config_path = 'yolo/darknet-yolov3.cfg'
+            labels = ['license_plate']
+            net, layer_names_output = load_yolo(weights_path, config_path)
+            _, detected_plates = detect_license_plate(file_path, net, layer_names_output, labels)
+
+            if not detected_plates:
+                return jsonify({"message": f"No license plate detected in uploaded image {filename}."}), 400
+
+        return jsonify({"message": "Car with images uploaded and processed successfully."}), 200
+
+    except Exception as e:
+        print(str(e))
+        return jsonify({"message": "Failed to upload car with images.", "error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
